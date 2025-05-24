@@ -14,7 +14,7 @@
 이 Workshop에서는 AWS 서비스를 자동으로 구축해보고, 운영 환경에서 다양한 문제를 해결하기 위해 Amazon Q CLI를 사용하는 방법을 사용자들이 학습할 수 있도록 설계된 일련의 실습들을 포함하고 있습니다.
 
 
-![alt text](image.png)
+![alt text](./others/image.png)
 
 ## Amazon Q CLI
 ### Amazon Q CLI란 무엇인가요?
