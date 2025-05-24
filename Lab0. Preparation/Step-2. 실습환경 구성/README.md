@@ -35,6 +35,8 @@ https://profile.aws.amazon.com/
 
 ![alt text](../../others/image-19.png)
 
+**[Q CLI 로그인 성공화면]**
+
 ![alt text](../../others/image-20.png)
 
 

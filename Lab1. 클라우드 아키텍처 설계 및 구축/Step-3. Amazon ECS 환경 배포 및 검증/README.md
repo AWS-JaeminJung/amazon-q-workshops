@@ -10,7 +10,7 @@ q chat
 
 아래와 같이 Amazon Q CLI를 활용해서 애플리케이션을 배포를 요청합니다.
 ```bash
-ECS클러스터가 정상적으로 배포된 것을 확인해어. frontend와 backend 소스코드를 docker build해서 ECR에 업로드하고, ECS에 배포할 수 있을까?
+ECS클러스터가 정상적으로 배포된 것을 확인했어. frontend와 backend 소스코드를 docker build해서 ECR에 업로드하고, ECS에 배포할 수 있을까?
 ```
 
 
