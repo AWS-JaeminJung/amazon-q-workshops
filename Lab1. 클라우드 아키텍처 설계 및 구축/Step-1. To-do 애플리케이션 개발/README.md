@@ -33,6 +33,7 @@ Amazon Q Developer에서 /dev 코드 개발 에이전트에게 애플리케이�
 
 우리도 READMD.md 파일을 확인하고 애플리케이션을 실행시켜보도록 하겠습니다. 우리는 frontend, backend로 구성된 애플리케이션을 docker-compose 방식으로 구동해 보도록 하겠습니다.
 ```
+cd todo-app
 docker-compose up --build
 ```
 
