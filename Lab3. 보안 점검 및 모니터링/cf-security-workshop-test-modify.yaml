@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Security Dashboard Infrastructure with Auto-starting Streamlit'
+
+# AMI ID 매핑 - 리전별 AMI 지정
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0953476d60561c955  # Amazon Linux 2023 AMI for us-east-1
+    us-west-2:
+      AMI: ami-0c9c942bd7bf113a2  # Amazon Linux 2023 AMI for us-west-2
+    ap-northeast-2:
+      AMI: ami-05377cf8cfef186c2  # Amazon Linux 2023 AMI for ap-northeast-2
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Environment name
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for the security dashboard
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID for the security dashboard EC2 instance
+
+  KeyName:
+    Type: String
+    Description: (Optional) Name of an existing EC2 key pair. Leave empty to use EC2 Instance Connect.
+    Default: ""
+
+  WorkshopIP:
+    Type: String
+    Description: IP address range for workshop participants
+    Default: 0.0.0.0/0
+
+# KeyName이 제공되었는지 확인하는 조건
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+
+Resources:
+  # IAM Role for EC2 Instance
+  DashboardInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SecurityDashboardPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  # Instance Profile
+  DashboardInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref DashboardInstanceRole
+
+  # Security Group for EC2
+  DashboardSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Security Dashboard EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref WorkshopIP
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: !Ref WorkshopIP
+
+  # EC2 Instance - 리전에 따른 AMI ID 선택
+  DashboardInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      InstanceType: t3.medium
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
+      IamInstanceProfile: !Ref DashboardInstanceProfile
+      SecurityGroupIds:
+        - !Ref DashboardSecurityGroup
+      SubnetId: !Ref SubnetId  # 파라미터 참조
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-security-dashboard"
+      UserData:
+        Fn::Base64: !Sub |
+
+          #!/bin/bash
+          
+          # 로그 설정
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          echo "UserData 스크립트 실행 시작: $(date)"
+          
+          # EC2 Instance Connect 설치 (키 페어 없이 접속할 수 있도록)
+          echo "EC2 Instance Connect 설치 중..."
+          yum install -y ec2-instance-connect
+          
+          # 시스템 업데이트
+          echo "시스템 업데이트 중..."
+          yum update -y
+          
+          # 필요한 패키지 설치
+          echo "필요한 패키지 설치 중..."
+          yum install -y python3-pip git
+          
+          # pip 업그레이드
+          echo "pip 업그레이드 중..."
+          pip3 install --upgrade pip
+
+          # requests 패키지 제거 (RPM 버전)
+          echo "기존 requests 패키지 제거 중..."
+          yum remove -y python3-requests || true
+          
+          # Streamlit 및 필요 라이브러리 설치
+          echo "Streamlit 및 필요 라이브러리 설치 중..."
+          pip3 install --no-cache-dir streamlit boto3 pandas plotly python-dotenv requests || { echo "Python 패키지 설치 실패"; exit 1; }
+          
+          # 저장소 클론
+          echo "GitHub 저장소 클론 중..."
+          git clone https://github.com/kjhyuok/aws-security-dashboard.git /home/ec2-user/aws-security-dashboard
+          
+          # 환경 변수 설정 파일 생성
+          echo "환경 변수 설정 파일 생성 중..."
+          cat > /home/ec2-user/aws-security-dashboard/workshop/lab1/.env << EOL
+          REGION=${AWS::Region}
+          ACCOUNT_ID=${AWS::AccountId}
+          ENVIRONMENT=${Environment}
+          GUARDDUTY_DETECTOR=${GuardDutyDetector}
+          WAF_WEB_ACL=${DashboardWebACL}
+          VPC_FLOW_LOGS_GROUP=${VPCFlowLogsGroup}
+          EOL
+          
+          # 권한 설정
+          echo "권한 설정 중..."
+          chown -R ec2-user:ec2-user /home/ec2-user/aws-security-dashboard
+          
+          # systemd 서비스 파일 생성
+          echo "systemd 서비스 설정 중..."
+          cat > /etc/systemd/system/streamlit.service << EOL
+          [Unit]
+          Description=Streamlit Application
+          After=network.target
+          
+          [Service]
+          User=ec2-user
+          WorkingDirectory=/home/ec2-user/aws-security-dashboard/workshop/lab1
+          ExecStart=/usr/local/bin/streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+          Restart=always
+          RestartSec=5
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOL
+          
+          # systemd 서비스 활성화 및 시작
+          echo "서비스 활성화 및 시작 중..."
+          systemctl daemon-reload
+          systemctl enable streamlit
+          systemctl start streamlit
+          
+          echo "UserData 스크립트 실행 완료: $(date)"
+
+  # WAF Web ACL
+  DashboardWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub ${Environment}-dashboard-waf
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      Rules:
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 1
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSet
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub ${Environment}-dashboard-waf-metrics
+
+  # GuardDuty Detector
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: FIFTEEN_MINUTES
+
+  # VPC Flow Logs
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCFlowLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+
+  VPCFlowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /vpc/flow-logs/${Environment}
+      RetentionInDays: 30
+
+  VPCFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
+      LogGroupName: !Ref VPCFlowLogsGroup
+      ResourceId: !Ref VpcId
+      ResourceType: VPC
+      TrafficType: ALL
+
+Outputs:
+  DashboardInstancePublicIP:
+    Description: Public IP address of the Security Dashboard instance
+    Value: !GetAtt DashboardInstance.PublicIp
+
+  DashboardInstancePublicDNS:
+    Description: Public DNS name of the Security Dashboard instance
+    Value: !GetAtt DashboardInstance.PublicDnsName
+
+  DashboardURL:
+    Description: URL for accessing the Security Dashboard
+    Value: !Sub http://${DashboardInstance.PublicDnsName}:8501
+
+  WebACLId:
+    Description: ID of the WAF Web ACL
+    Value: !Ref DashboardWebACL
+
+  GuardDutyDetectorId:
+    Description: ID of the GuardDuty Detector
+    Value: !Ref GuardDutyDetector
+
+  VPCFlowLogsGroupName:
+    Description: Name of the VPC Flow Logs Log Group
+    Value: !Ref VPCFlowLogsGroup
+
+  EC2ConnectInstructions:
+    Description: Instructions for connecting to the instance using EC2 Instance Connect
+    Value: !Sub "To connect to the instance, go to the EC2 console, select the instance, and click 'Connect' button. Choose 'EC2 Instance Connect' tab and click 'Connect'."
