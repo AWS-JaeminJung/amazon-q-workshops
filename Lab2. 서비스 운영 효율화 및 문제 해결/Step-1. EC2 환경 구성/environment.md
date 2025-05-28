@@ -50,9 +50,3 @@ t3.micro, t3.medium 인스턴스를 InstanceType, Environment를 고려해서 �
 
 ![alt text](../../others/Lab2-img-6.png)
 ![alt text](../../others/Lab2-img-7.png)
-
-### 06. Amazon Q Developer CLI를 활용한 인스턴스 모니터링 환경 
-
-```bash
-t3.micro, t3.medium 인스턴스를 모니터링하는 cloudwatch 대시보드를 구성하고 싶어. CPU, RAM 및 다양한 모니터링 항목을 구성하고 싶어.
-```
