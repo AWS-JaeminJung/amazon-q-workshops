@@ -16,6 +16,7 @@ t3.micro 2개, t3.medium 2개 생성해줘.
 콘솔에서 EC2를 확인해보면 아래와 같이 잘 생성된 것을 확인할 수 있습니다.
 ![alt text](../../others/Lab2-img-2.png)
 
+---
 
 ### 02. Amazon Q Developer CLI를 활용한 인스턴스 태깅 작업
 
@@ -27,6 +28,8 @@ t3.micro 2개, t3.medium 2개 생성해줘.
 
 ![alt text](../../others/Lab2-img-3.png)
 
+---
+
 ### 03. Amazon Q Developer CLI를 활용한 인스턴스 타입별 예상 금액
 
 인스턴스 타입별 예상 금액을 질의해볼 수 있습니다.
@@ -36,6 +39,7 @@ t3.micro, t3.medium 인스턴스 타입에 따라 이번달 인스턴스 금액�
 
 ![alt text](../../others/Lab2-img-4.png)
 
+---
 
 ### 04. Amazon Q Developer CLI를 활용한 Stage별 태깅 추가 작업
 
@@ -48,6 +52,7 @@ t3.micro에는 test, t3.medium에는 prod라고 태깅을 붙여줘.
 
 ![alt text](../../others/Lab2-img-5.png)
 
+---
 
 ### 05. Amazon Q Developer CLI를 활용한 인스턴스 타입별, Stage별 예상 금액 md 파일로 생성
 
