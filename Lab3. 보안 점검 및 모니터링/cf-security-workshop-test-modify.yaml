@@ -20,29 +20,83 @@ Parameters:
       - prod
     Description: Environment name
 
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC ID for the security dashboard
-
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Description: Subnet ID for the security dashboard EC2 instance
-
-  KeyName:
-    Type: String
-    Description: (Optional) Name of an existing EC2 key pair. Leave empty to use EC2 Instance Connect.
-    Default: ""
-
-  WorkshopIP:
-    Type: String
-    Description: IP address range for workshop participants
-    Default: 0.0.0.0/0
-
-# KeyName이 제공되었는지 확인하는 조건
-Conditions:
-  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
-
 Resources:
+  # Lambda 실행 역할
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EC2VPCAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                Resource: '*'
+
+  # VPC와 서브넷 ID를 찾는 Lambda 함수
+  VpcFinderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              
+              try:
+                  ec2 = boto3.client('ec2')
+                  
+                  # 기본 VPC 찾기
+                  vpcs = ec2.describe_vpcs(Filters=[{'Name': 'isDefault', 'Values': ['true']}])
+                  if not vpcs['Vpcs']:
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': '기본 VPC를 찾을 수 없습니다.'})
+                      return
+                  
+                  vpc_id = vpcs['Vpcs'][0]['VpcId']
+                  
+                  # 기본 VPC의 첫 번째 서브넷 찾기
+                  subnets = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])
+                  if not subnets['Subnets']:
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': '서브넷을 찾을 수 없습니다.'})
+                      return
+                  
+                  subnet_id = subnets['Subnets'][0]['SubnetId']
+                  
+                  response_data = {
+                      'VpcId': vpc_id,
+                      'SubnetId': subnet_id
+                  }
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # VPC와 서브넷 ID를 찾는 커스텀 리소스
+  VpcFinder:
+    Type: Custom::VpcFinder
+    Properties:
+      ServiceToken: !GetAtt VpcFinderFunction.Arn
+
   # IAM Role for EC2 Instance
   DashboardInstanceRole:
     Type: AWS::IAM::Role
@@ -77,34 +131,32 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Security Dashboard EC2 instance
-      VpcId: !Ref VpcId
+      VpcId: !GetAtt VpcFinder.VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Ref WorkshopIP
+          CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
           FromPort: 8501
           ToPort: 8501
-          CidrIp: !Ref WorkshopIP
+          CidrIp: 0.0.0.0/0
 
   # EC2 Instance - 리전에 따른 AMI ID 선택
   DashboardInstance:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
-      InstanceType: t3.medium
-      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
+      InstanceType: t2.medium
       IamInstanceProfile: !Ref DashboardInstanceProfile
       SecurityGroupIds:
         - !Ref DashboardSecurityGroup
-      SubnetId: !Ref SubnetId  # 파라미터 참조
+      SubnetId: !GetAtt VpcFinder.SubnetId
       Tags:
         - Key: Name
           Value: !Sub "${Environment}-security-dashboard"
       UserData:
         Fn::Base64: !Sub |
-
           #!/bin/bash
           
           # 로그 설정
@@ -249,7 +301,7 @@ Resources:
     Properties:
       DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
       LogGroupName: !Ref VPCFlowLogsGroup
-      ResourceId: !Ref VpcId
+      ResourceId: !GetAtt VpcFinder.VpcId
       ResourceType: VPC
       TrafficType: ALL
 
