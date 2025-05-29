@@ -7,7 +7,7 @@ from utils.s3_security import get_s3_security_issues
 from utils.waf_security import get_waf_security_issues
 from utils.guardduty_security import get_guardduty_findings, format_guardduty_findings, get_guardduty_status
 
-def get_q_recommendation(issue_type, issue_details):
+def get_q_recommendation(issue_type, issue_details, resource):
     """
     Amazon Q CLI에 물어볼 수 있는 상세한 프롬프트를 생성합니다.
     """
@@ -15,6 +15,7 @@ def get_q_recommendation(issue_type, issue_details):
 AWS 보안 이슈 해결 방법을 찾고 있습니다. 다음 이슈에 대한 해결 방법을 알려주세요:
 
 이슈 유형: {issue_type}
+영향받는 리소스: {resource}
 이슈 상세 내용: {issue_details}
 
 다음 정보를 포함한 해결 방법을 제시해주세요:
@@ -464,7 +465,7 @@ with tabs[3]:
                 high_severity_issues.append({
                     'type': 'S3',
                     'details': issue.get('description', ''),
-                    'resource': issue.get('resource', '')
+                    'resource': f"{issue.get('resource_type', '')} - {issue.get('resource_id', '')}"
                 })
         
         # WAF HIGH 이슈
@@ -473,7 +474,7 @@ with tabs[3]:
                 high_severity_issues.append({
                     'type': 'WAF',
                     'details': issue.get('description', ''),
-                    'resource': issue.get('resource', '')
+                    'resource': f"{issue.get('resource_type', '')} - {issue.get('resource_id', '')}"
                 })
         
         if high_severity_issues:
@@ -484,7 +485,7 @@ with tabs[3]:
                     st.markdown(f"**리소스**: {issue['resource']}")
                     
                     if st.button(f"Amazon Q에게 {issue['type']} 이슈 해결 방법 물어보기", key=f"q_btn_{issue['type']}_{idx}"):
-                        prompt = get_q_recommendation(issue['type'], issue['details'])
+                        prompt = get_q_recommendation(issue['type'], issue['details'], issue['resource'])
                         st.markdown("### Amazon Q CLI에 물어볼 프롬프트")
                         st.code(prompt, language="text")
                         st.info("위 프롬프트를 복사하여 Amazon Q Dev Chat 터미널에서 사용하세요.")
