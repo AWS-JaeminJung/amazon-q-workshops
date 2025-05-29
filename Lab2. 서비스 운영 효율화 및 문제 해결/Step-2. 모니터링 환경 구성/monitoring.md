@@ -4,6 +4,8 @@
 
 ### 01. Amazon Q Developer CLI를 활용한 인스턴스 모니터링 환경 구축
 
+
+
 ```bash
 t3.micro, t3.medium 인스턴스를 모니터링하는 cloudwatch 대시보드를 구성하고 싶어. CPU, RAM 및 다양한 모니터링 항목을 구성하고 싶어.
 ```
@@ -33,9 +35,12 @@ t3.micro, t3.medium 인스턴스를 모니터링하는 cloudwatch 대시보드�
 그럼 테스트 환경에 CPU 부하를 80% 이상으로 줄 수 있도록 스크립트를 생성해서 10분 간 실행해줘.
 ```
 
+```bash
+ssm run command 활용해서 네가 실행해줘
+```
+
 ![alt text](../../others/Lab2-img-12.png)
 ![alt text](../../others/Lab2-img-13.png)
 ![alt text](../../others/Lab2-img-14.png)
-![alt text](../../others/Lab2-img-15.png)
 ![alt text](../../others/Lab2-img-16.png)
 ![alt text](../../others/Lab2-img-17.png)
