@@ -1,10 +1,32 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import subprocess
 from utils.aws_client import create_aws_session, get_iam_info, get_cloudtrail_events
 from utils.s3_security import get_s3_security_issues
 from utils.waf_security import get_waf_security_issues
 from utils.guardduty_security import get_guardduty_findings, format_guardduty_findings, get_guardduty_status
+
+def get_q_recommendation(issue_type, issue_details):
+    """
+    Amazon Q CLI에 물어볼 수 있는 상세한 프롬프트를 생성합니다.
+    """
+    prompt = f"""
+AWS 보안 이슈 해결 방법을 찾고 있습니다. 다음 이슈에 대한 해결 방법을 알려주세요:
+
+이슈 유형: {issue_type}
+이슈 상세 내용: {issue_details}
+
+다음 정보를 포함한 해결 방법을 제시해주세요:
+1. 이슈의 심각도와 잠재적 위험
+2. AWS 콘솔에서의 구체적인 해결 단계
+3. AWS CLI나 CloudFormation을 사용한 자동화 방법
+4. 해결 후 확인해야 할 검증 단계
+5. 향후 유사한 이슈를 방지하기 위한 모범 사례
+
+AWS 보안 모범 사례와 최신 가이드라인을 참고하여 답변해주세요.
+"""
+    return prompt
 
 # Page configuration
 st.set_page_config(page_title="AWS Security Dashboard", page_icon="🔒", layout="wide")
@@ -433,315 +455,41 @@ with tabs[3]:
     if not st.session_state.scan_completed:
         st.info("보안 스캔을 시작하여 권장 조치를 확인하세요.")
     else:
-        # 권장 조치 목록
-        recommendations = []
+        # HIGH 심각도 이슈 필터링
+        high_severity_issues = []
         
-        # IAM 관련 권장 조치
-        iam_info = st.session_state.iam_info if hasattr(st.session_state, 'iam_info') else {}
-        
-        # MFA가 없는 사용자 확인
-        if 'users_without_mfa' in iam_info and iam_info['users_without_mfa']:
-            recommendations.append({
-                'title': 'MFA가 없는 사용자 발견',
-                'description': f"{len(iam_info['users_without_mfa'])}명의 사용자가 MFA를 사용하지 않고 있습니다. 모든 IAM 사용자에게 MFA를 활성화하는 것이 좋습니다.",
-                'severity': 'HIGH',
-                'action': 'AWS 콘솔에서 IAM > 사용자로 이동하여 MFA 디바이스를 등록하세요.',
-                'affected_resources': iam_info['users_without_mfa']
-            })
-        
-        # S3 관련 권장 조치
-        if hasattr(st.session_state, 's3_issues') and st.session_state.s3_issues:
-            high_issues = [i for i in st.session_state.s3_issues if i.get('severity') == 'HIGH']
-            if high_issues:
-                recommendations.append({
-                    'title': 'S3 버킷 보안 취약점 발견',
-                    'description': f"{len(high_issues)}개의 심각한 S3 버킷 보안 취약점이 발견되었습니다. 즉시 조치가 필요합니다.",
-                    'severity': 'HIGH',
-                    'action': '발견 사항 탭에서 자세한 내용을 확인하고 조치하세요.',
-                    'affected_resources': [i.get('resource_id', 'N/A') for i in high_issues]
+        # S3 HIGH 이슈
+        for issue in st.session_state.s3_issues:
+            if issue.get('severity') == 'HIGH':
+                high_severity_issues.append({
+                    'type': 'S3',
+                    'details': issue.get('description', ''),
+                    'resource': issue.get('resource', '')
                 })
         
-        # WAF 관련 권장 조치
-        if hasattr(st.session_state, 'waf_issues') and st.session_state.waf_issues:
-            high_issues = [i for i in st.session_state.waf_issues if i.get('severity') == 'HIGH']
-            if high_issues:
-                recommendations.append({
-                    'title': 'WAF 보안 구성 이슈 발견',
-                    'description': f"{len(high_issues)}개의 심각한 WAF 보안 구성 이슈가 발견되었습니다. 웹 애플리케이션이 적절히 보호되지 않을 수 있습니다.",
-                    'severity': 'HIGH',
-                    'action': '발견 사항 탭에서 자세한 내용을 확인하고 WAF 규칙을 추가하세요.',
-                    'affected_resources': [i.get('resource_id', 'N/A') for i in high_issues]
+        # WAF HIGH 이슈
+        for issue in st.session_state.waf_issues:
+            if issue.get('severity') == 'HIGH':
+                high_severity_issues.append({
+                    'type': 'WAF',
+                    'details': issue.get('description', ''),
+                    'resource': issue.get('resource', '')
                 })
         
-        # GuardDuty 관련 권장 조치
-        if hasattr(st.session_state, 'guardduty_findings') and st.session_state.guardduty_findings:
-            high_findings = [f for f in st.session_state.guardduty_findings if f.get('심각도', 0) > 7]
-            if high_findings:
-                recommendations.append({
-                    'title': 'GuardDuty에서 심각한 위협 발견',
-                    'description': f"{len(high_findings)}개의 심각한 보안 위협이 GuardDuty에서 발견되었습니다. 즉시 조치가 필요합니다.",
-                    'severity': 'CRITICAL',
-                    'action': '발견 사항 탭에서 자세한 내용을 확인하고 조치하세요.',
-                    'affected_resources': [f.get('리소스 ID', 'N/A') for f in high_findings]
-                })
-        
-        # 권장 조치 표시
-        if recommendations:
-            for rec in recommendations:
-                severity_class = "severity-high" if rec['severity'] in ["CRITICAL", "HIGH"] else \
-                                "severity-medium" if rec['severity'] == "MEDIUM" else "severity-low"
-                
-                st.markdown(f"""
-                <div class="finding-item {severity_class}">
-                    <h3 style="color: #000000;">{rec['title']}</h3>
-                    <p style="color: #000000;"><strong style="color: #000000;">심각도:</strong> {rec['severity']}</p>
-                    <p style="color: #000000;"><strong style="color: #000000;">설명:</strong> {rec['description']}</p>
-                    <p style="color: #000000;"><strong style="color: #000000;">권장 조치:</strong> {rec['action']}</p>
-                    <p style="color: #000000;"><strong style="color: #000000;">영향 받는 리소스:</strong> {', '.join(rec['affected_resources'][:5])}{'...' if len(rec['affected_resources']) > 5 else ''}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Amazon Q에게 조치 방법 물어보기 버튼
-                if st.button(f"Amazon Q에게 '{rec['title']}' 조치 방법 물어보기", key=f"ask_q_{recommendations.index(rec)}"):
-                    st.markdown("<h4 style='color: #000000;'>Amazon Q 해결 가이드</h4>", unsafe_allow_html=True)
+        if high_severity_issues:
+            st.warning(f"발견된 HIGH 심각도 이슈: {len(high_severity_issues)}개")
+            
+            for idx, issue in enumerate(high_severity_issues):
+                with st.expander(f"{issue['type']} - {issue['details']}"):
+                    st.markdown(f"**리소스**: {issue['resource']}")
                     
-                    # 위협 유형에 따른 해결 가이드 제공
-                    if "MFA" in rec['title']:
-                        st.markdown("""
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #FF9900; color: #000000;">
-                            <h5 style="color: #000000;">MFA가 없는 사용자 문제 해결 가이드</h5>
-                            <p style="color: #000000;"><strong>문제:</strong> MFA(다중 인증)가 활성화되지 않은 IAM 사용자가 있습니다. 이는 계정 보안에 취약점을 만들 수 있습니다.</p>
-                            
-                            <h6 style="color: #000000;">해결 단계:</h6>
-                            <ol style="color: #000000;">
-                                <li>AWS 콘솔에 로그인하고 IAM 서비스로 이동합니다.</li>
-                                <li>왼쪽 메뉴에서 '사용자'를 선택합니다.</li>
-                                <li>MFA가 없는 사용자를 선택합니다.</li>
-                                <li>'보안 자격 증명' 탭을 클릭합니다.</li>
-                                <li>'할당된 MFA 디바이스' 섹션에서 'MFA 디바이스 관리'를 클릭합니다.</li>
-                                <li>'가상 MFA 디바이스'를 선택하고 '계속'을 클릭합니다.</li>
-                                <li>QR 코드를 스캔하거나 비밀 키를 입력하여 모바일 앱(예: Google Authenticator)에 MFA를 설정합니다.</li>
-                                <li>모바일 앱에서 생성된 두 개의 연속 MFA 코드를 입력합니다.</li>
-                                <li>'MFA 할당'을 클릭하여 설정을 완료합니다.</li>
-                            </ol>
-                            
-                            <h6 style="color: #000000;">AWS CLI를 사용한 방법:</h6>
-                            <pre style="background-color: #f1f1f1; padding: 10px; color: #000000;">
-# 가상 MFA 디바이스 생성
-aws iam create-virtual-mfa-device --virtual-mfa-device-name MyMFA --outfile /tmp/QRCode.png --bootstrap-method QRCodePNG
-
-# MFA 디바이스를 사용자에게 할당 (두 개의 연속 코드 필요)
-aws iam enable-mfa-device --user-name USERNAME --serial-number arn:aws:iam::ACCOUNT-ID:mfa/MyMFA --authentication-code-1 CODE1 --authentication-code-2 CODE2
-                            </pre>
-                            
-                            <h6 style="color: #000000;">모범 사례:</h6>
-                            <ul style="color: #000000;">
-                                <li>모든 IAM 사용자, 특히 관리자 권한이 있는 사용자에게 MFA를 활성화하세요.</li>
-                                <li>MFA 없이 중요한 작업을 수행할 수 없도록 IAM 정책을 구성하세요.</li>
-                                <li>정기적으로 MFA 상태를 감사하고 모니터링하세요.</li>
-                            </ul>
-                            
-                            <p style="color: #000000;"><strong>참고 문서:</strong> <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_mfa.html" target="_blank">AWS IAM 사용 설명서: MFA 사용</a></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    elif "S3 버킷" in rec['title']:
-                        st.markdown("""
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #FF9900; color: #000000;">
-                            <h5 style="color: #000000;">S3 버킷 보안 취약점 해결 가이드</h5>
-                            <p style="color: #000000;"><strong>문제:</strong> 일부 S3 버킷에 보안 취약점이 발견되었습니다. 이는 데이터 유출 위험을 초래할 수 있습니다.</p>
-                            
-                            <h6 style="color: #000000;">해결 단계:</h6>
-                            <ol style="color: #000000;">
-                                <li>AWS 콘솔에 로그인하고 S3 서비스로 이동합니다.</li>
-                                <li>취약한 버킷을 선택합니다.</li>
-                                <li>'권한' 탭을 클릭합니다.</li>
-                                <li>'퍼블릭 액세스 차단' 설정을 확인하고 필요한 경우 '편집'을 클릭하여 모든 퍼블릭 액세스를 차단합니다.</li>
-                                <li>버킷 정책을 검토하고 불필요한 퍼블릭 액세스 권한을 제거합니다.</li>
-                                <li>ACL(액세스 제어 목록)을 검토하고 필요하지 않은 권한을 제거합니다.</li>
-                                <li>버킷 암호화 설정을 확인하고 서버 측 암호화를 활성화합니다.</li>
-                            </ol>
-                            
-                            <h6 style="color: #000000;">AWS CLI를 사용한 방법:</h6>
-                            <pre style="background-color: #f1f1f1; padding: 10px; color: #000000;">
-# 버킷의 퍼블릭 액세스 차단 설정
-aws s3api put-public-access-block --bucket BUCKET_NAME --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-
-# 버킷 암호화 활성화
-aws s3api put-bucket-encryption --bucket BUCKET_NAME --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}'
-                            </pre>
-                            
-                            <h6 style="color: #000000;">모범 사례:</h6>
-                            <ul style="color: #000000;">
-                                <li>모든 S3 버킷에 대해 기본적으로 퍼블릭 액세스를 차단하세요.</li>
-                                <li>최소 권한 원칙을 따라 필요한 권한만 부여하세요.</li>
-                                <li>모든 버킷에 서버 측 암호화를 활성화하세요.</li>
-                                <li>버킷 정책과 IAM 정책을 정기적으로 검토하세요.</li>
-                                <li>S3 액세스 로깅을 활성화하여 모든 액세스를 모니터링하세요.</li>
-                            </ul>
-                            
-                            <p style="color: #000000;"><strong>참고 문서:</strong> <a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html" target="_blank">Amazon S3 보안 모범 사례</a></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    elif "WAF" in rec['title']:
-                        st.markdown("""
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #FF9900; color: #000000;">
-                            <h5 style="color: #000000;">WAF 보안 구성 이슈 해결 가이드</h5>
-                            <p style="color: #000000;"><strong>문제:</strong> WAF(웹 애플리케이션 방화벽) 구성에 보안 이슈가 발견되었습니다. 이로 인해 웹 애플리케이션이 공격에 취약할 수 있습니다.</p>
-                            
-                            <h6 style="color: #000000;">해결 단계:</h6>
-                            <ol style="color: #000000;">
-                                <li>AWS 콘솔에 로그인하고 WAF & Shield 서비스로 이동합니다.</li>
-                                <li>'웹 ACL'을 선택하고 문제가 있는 웹 ACL을 클릭합니다.</li>
-                                <li>'규칙' 탭을 검토하고 필요한 보호 규칙이 활성화되어 있는지 확인합니다.</li>
-                                <li>AWS 관리형 규칙 그룹(예: 핵심 규칙 세트, SQL 인젝션, XSS 방지)을 추가합니다.</li>
-                                <li>속도 기반 규칙을 추가하여 DDoS 공격을 방지합니다.</li>
-                                <li>IP 기반 차단 규칙을 검토하고 필요한 경우 업데이트합니다.</li>
-                                <li>로깅을 활성화하여 모든 WAF 이벤트를 모니터링합니다.</li>
-                            </ol>
-                            
-                            <h6 style="color: #000000;">AWS CLI를 사용한 방법:</h6>
-                            <pre style="background-color: #f1f1f1; padding: 10px; color: #000000;">
-# AWS 관리형 규칙 그룹 추가
-aws wafv2 update-web-acl --name MY_WEB_ACL --scope REGIONAL --id WEB_ACL_ID --lock-token LOCK_TOKEN --rules '[{
-    "Name": "AWS-AWSManagedRulesCommonRuleSet",
-    "Priority": 0,
-    "Statement": {
-        "ManagedRuleGroupStatement": {
-            "VendorName": "AWS",
-            "Name": "AWSManagedRulesCommonRuleSet"
-        }
-    },
-    "OverrideAction": {
-        "None": {}
-    },
-    "VisibilityConfig": {
-        "SampledRequestsEnabled": true,
-        "CloudWatchMetricsEnabled": true,
-        "MetricName": "AWS-AWSManagedRulesCommonRuleSet"
-    }
-}]'
-                            </pre>
-                            
-                            <h6 style="color: #000000;">모범 사례:</h6>
-                            <ul style="color: #000000;">
-                                <li>OWASP Top 10 취약점을 방어하는 규칙을 구성하세요.</li>
-                                <li>속도 기반 규칙을 사용하여 과도한 요청을 차단하세요.</li>
-                                <li>지리적 제한을 설정하여 불필요한 지역에서의 액세스를 차단하세요.</li>
-                                <li>로깅을 활성화하고 정기적으로 로그를 검토하세요.</li>
-                                <li>WAF 규칙을 정기적으로 테스트하고 업데이트하세요.</li>
-                            </ul>
-                            
-                            <p style="color: #000000;"><strong>참고 문서:</strong> <a href="https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html" target="_blank">AWS WAF 개발자 가이드</a></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    elif "GuardDuty" in rec['title']:
-                        st.markdown("""
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #FF9900; color: #000000;">
-                            <h5 style="color: #000000;">GuardDuty 위협 해결 가이드</h5>
-                            <p style="color: #000000;"><strong>문제:</strong> GuardDuty에서 심각한 보안 위협이 감지되었습니다. 이는 계정이나 리소스가 공격받고 있음을 나타낼 수 있습니다.</p>
-                            
-                            <h6 style="color: #000000;">해결 단계:</h6>
-                            <ol style="color: #000000;">
-                                <li>AWS 콘솔에 로그인하고 GuardDuty 서비스로 이동합니다.</li>
-                                <li>'결과' 페이지에서 심각한 위협을 확인합니다.</li>
-                                <li>각 위협의 세부 정보를 검토하여 영향받은 리소스와 위협 유형을 파악합니다.</li>
-                                <li>위협 유형에 따라 적절한 조치를 취합니다:
-                                    <ul>
-                                        <li><strong>무단 액세스:</strong> 관련 IAM 자격 증명을 교체하고 권한을 검토합니다.</li>
-                                        <li><strong>악성 IP 통신:</strong> 보안 그룹 및 NACL을 업데이트하여 해당 IP를 차단합니다.</li>
-                                        <li><strong>암호화폐 채굴:</strong> 영향받은 인스턴스를 격리하고 조사합니다.</li>
-                                        <li><strong>데이터 유출:</strong> 관련 S3 버킷의 권한을 검토하고 제한합니다.</li>
-                                    </ul>
-                                </li>
-                                <li>영향받은 리소스를 격리하거나 종료하여 추가 피해를 방지합니다.</li>
-                                <li>보안 그룹, IAM 정책, 네트워크 ACL 등을 검토하고 강화합니다.</li>
-                                <li>사고 대응 계획에 따라 추가 조사를 수행합니다.</li>
-                            </ol>
-                            
-                            <h6 style="color: #000000;">AWS CLI를 사용한 방법:</h6>
-                            <pre style="background-color: #f1f1f1; padding: 10px; color: #000000;">
-# GuardDuty 결과 세부 정보 가져오기
-aws guardduty get-findings --detector-id DETECTOR_ID --finding-ids FINDING_ID
-
-# 악성 IP를 차단하는 보안 그룹 규칙 추가
-aws ec2 revoke-security-group-ingress --group-id SECURITY_GROUP_ID --protocol all --cidr MALICIOUS_IP/32
-
-# 의심스러운 IAM 사용자 액세스 키 비활성화
-aws iam update-access-key --access-key-id ACCESS_KEY_ID --status Inactive --user-name USER_NAME
-                            </pre>
-                            
-                            <h6 style="color: #000000;">모범 사례:</h6>
-                            <ul style="color: #000000;">
-                                <li>GuardDuty 결과에 대한 자동 알림을 설정하세요.</li>
-                                <li>정기적으로 GuardDuty 결과를 검토하세요.</li>
-                                <li>사고 대응 계획을 수립하고 정기적으로 테스트하세요.</li>
-                                <li>최소 권한 원칙을 따라 IAM 권한을 구성하세요.</li>
-                                <li>VPC 흐름 로그와 CloudTrail을 활성화하여 모든 활동을 모니터링하세요.</li>
-                            </ul>
-                            
-                            <p style="color: #000000;"><strong>참고 문서:</strong> <a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_findings.html" target="_blank">AWS GuardDuty 결과 이해 및 대응</a></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    else:
-                        st.markdown("""
-                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #FF9900; color: #000000;">
-                            <h5 style="color: #000000;">일반 보안 권장 사항</h5>
-                            <p style="color: #000000;"><strong>문제:</strong> 보안 취약점이 발견되었습니다. 이는 AWS 환경의 보안 상태에 영향을 미칠 수 있습니다.</p>
-                            
-                            <h6 style="color: #000000;">일반적인 보안 강화 단계:</h6>
-                            <ol style="color: #000000;">
-                                <li>모든 IAM 사용자에 대해 MFA를 활성화하세요.</li>
-                                <li>루트 사용자 액세스 키를 삭제하고 루트 사용자에 MFA를 설정하세요.</li>
-                                <li>최소 권한 원칙에 따라 IAM 정책을 검토하고 업데이트하세요.</li>
-                                <li>모든 S3 버킷에 대해 퍼블릭 액세스를 차단하세요.</li>
-                                <li>중요한 데이터에 대해 암호화를 활성화하세요.</li>
-                                <li>보안 그룹 규칙을 검토하고 불필요한 포트를 닫으세요.</li>
-                                <li>CloudTrail, VPC 흐름 로그, S3 액세스 로깅 등 모니터링을 활성화하세요.</li>
-                                <li>AWS Config를 사용하여 리소스 구성을 지속적으로 모니터링하세요.</li>
-                                <li>Security Hub를 활성화하여 보안 모범 사례를 확인하세요.</li>
-                            </ol>
-                            
-                            <h6 style="color: #000000;">AWS CLI를 사용한 보안 점검:</h6>
-                            <pre style="background-color: #f1f1f1; padding: 10px; color: #000000;">
-# IAM 사용자 목록 및 MFA 상태 확인
-aws iam list-users | jq -r '.Users[].UserName' | while read user; do
-  aws iam list-mfa-devices --user-name $user | jq -r '.MFADevices | length'
-done
-
-# 퍼블릭 S3 버킷 확인
-aws s3api list-buckets --query 'Buckets[].Name' --output text | while read bucket; do
-  aws s3api get-bucket-policy-status --bucket $bucket --query 'PolicyStatus.IsPublic' 2>/dev/null || echo "No policy"
-done
-                            </pre>
-                            
-                            <h6 style="color: #000000;">AWS 보안 모범 사례:</h6>
-                            <ul style="color: #000000;">
-                                <li>정기적인 보안 평가 및 취약점 스캔을 수행하세요.</li>
-                                <li>패치 관리 프로세스를 구현하여 시스템을 최신 상태로 유지하세요.</li>
-                                <li>인프라를 코드로 관리하여 일관된 보안 구성을 유지하세요.</li>
-                                <li>보안 이벤트에 대한 자동 알림 및 대응 메커니즘을 구현하세요.</li>
-                                <li>정기적으로 보안 교육을 실시하여 팀의 보안 인식을 높이세요.</li>
-                            </ul>
-                            
-                            <p style="color: #000000;"><strong>참고 문서:</strong> <a href="https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/welcome.html" target="_blank">AWS Well-Architected Framework - 보안 기둥</a></p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # 추가 조치 버튼
-                    st.markdown("<p style='color: #000000;'>이 가이드가 도움이 되셨나요?</p>", unsafe_allow_html=True)
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("더 자세한 정보 필요", key=f"more_info_{recommendations.index(rec)}"):
-                            st.markdown("<p style='color: #000000;'>더 자세한 정보는 AWS 공식 문서를 참조하세요.</p>", unsafe_allow_html=True)
-                    with col2:
-                        if st.button("문제 해결됨", key=f"resolved_{recommendations.index(rec)}"):
-                            st.success("문제 해결을 완료했습니다! 다음 보안 스캔에서 이 문제가 해결되었는지 확인하세요.")
+                    if st.button(f"Amazon Q에게 {issue['type']} 이슈 해결 방법 물어보기", key=f"q_btn_{issue['type']}_{idx}"):
+                        prompt = get_q_recommendation(issue['type'], issue['details'])
+                        st.markdown("### Amazon Q CLI에 물어볼 프롬프트")
+                        st.code(prompt, language="text")
+                        st.info("위 프롬프트를 복사하여 Amazon Q Dev Chat 터미널에서 사용하세요.")
         else:
-            st.success("모든 보안 검사를 통과했습니다! 현재 권장 조치가 없습니다.")
+            st.success("HIGH 심각도의 보안 이슈가 발견되지 않았습니다.")
     st.markdown('</div></div>', unsafe_allow_html=True)
 
 # Footer
